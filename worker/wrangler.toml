@@ -1,0 +1,17 @@
+name = "okazu-finder-worker"
+main = "src/index.ts"
+compatibility_date = "2025-05-15"
+
+[vars]
+OLLAMA_MODEL = "gemma3:12b"
+MAX_RESULTS_PER_SITE = "20"
+
+# 自宅サーバーのURL (Cloudflare Tunnel または公開URL)
+# HOME_SERVER_URL = "https://okazu-home.example.com"
+
+# SearXNGインスタンスのURL
+# SEARXNG_URL = "https://search.example.com"
+
+# [Routes]
+# pattern = "api.okazu-finder.workers.dev"
+# zone_id = ""

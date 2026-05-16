@@ -1,4 +1,5 @@
 import type { SearchResult } from '../types';
+import { CONTENT_TYPE_LABELS } from '../types';
 
 interface Props {
   result: SearchResult;
@@ -21,7 +22,15 @@ export function ResultCard({ result }: Props) {
       </div>
       <div className="info">
         <div className="title">{result.title || result.url}</div>
-        <div className="url">{result.url}</div>
+        <div className="result-meta">
+          <span className={`content-badge ${result.content_type}`}>
+            {CONTENT_TYPE_LABELS[result.content_type]}
+          </span>
+          <span className="url">{new URL(result.url).hostname}</span>
+        </div>
+        {result.author && (
+          <div className="result-author">by {result.author}</div>
+        )}
         {result.snippet && (
           <div className="snippet">{result.snippet}</div>
         )}

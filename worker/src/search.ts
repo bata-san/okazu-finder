@@ -11,196 +11,130 @@ export async function searchSearxng(
 ): Promise<SearchResult[]> {
   if (!searxngUrl) return [];
 
-  const results: SearchResult[] = [];
+  const allResults: SearchResult[] = [];
+  const seenUrls = new Set<string>();
+
   for (const q of queries) {
     try {
-      const url = `${searxngUrl}/search?q=${enc(q)}&format=json&safesearch=0&categories=general,images`;
+      const url = `${searxngUrl}/search?q=${enc(q)}&format=json&safesearch=0&categories=general,images,videos&engines=google,bing,duckduckgo,brave,qwant`;
       const resp = await fetch(url);
       if (!resp.ok) continue;
 
       const data = await resp.json() as { results?: Array<{ title?: string; url?: string; content?: string; img_src?: string }> };
+
       for (const r of (data.results || []).slice(0, maxResults)) {
-        results.push({
+        const resultUrl = r.url || '';
+        const key = normalizeUrl(resultUrl);
+        if (seenUrls.has(key)) continue;
+        seenUrls.add(key);
+
+        allResults.push({
           title: r.title || '',
-          url: r.url || '',
+          url: resultUrl,
           snippet: r.content || '',
-          site: 'searxng',
+          site: extractSite(resultUrl),
           thumbnail: r.img_src || null,
+          content_type: 'other',
+          author: null,
+          media_urls: [],
         });
       }
     } catch (e) {
       console.error(`SearXNG error for "${q}":`, e);
     }
   }
-  return results;
+
+  return allResults;
 }
 
-export async function searchDuckduckgo(
-  queries: string[],
-  maxResults: number,
-): Promise<SearchResult[]> {
-  const results: SearchResult[] = [];
-  for (const q of queries) {
+export async function resolveFxtwitter(results: SearchResult[]): Promise<void> {
+  for (const r of results) {
+    if (!isTwitterUrl(r.url)) continue;
+
+    const tweetId = extractTweetId(r.url);
+    if (!tweetId) continue;
+
     try {
-      const url = `https://lite.duckduckgo.com/lite/?q=${enc(q)}`;
-      const resp = await fetch(url, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; rv:120.0) Gecko/20100101 Firefox/120.0' },
-      });
+      const resp = await fetch(`https://api.fxtwitter.com/status/${tweetId}`);
       if (!resp.ok) continue;
 
-      const html = await resp.text();
-      const rowRegex = /<tr[^>]*>[\s\S]*?<a[^>]*class="result-link"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<td[^>]*class="result-snippet"[^>]*>([\s\S]*?)<\/td>[\s\S]*?<\/tr>/gi;
+      const json = await resp.json() as {
+        tweet?: {
+          author?: { name?: string; screen_name?: string };
+          text?: string;
+          media?: {
+            photos?: Array<{ url: string }>;
+            videos?: Array<{ url: string }>;
+          };
+        };
+      };
 
-      let match;
-      let count = 0;
-      while ((match = rowRegex.exec(html)) !== null && count < maxResults) {
-        const url = match[1];
-        const title = match[2].replace(/<[^>]*>/g, '').trim();
-        const snippet = match[3].replace(/<[^>]*>/g, '').trim();
-        if (title && url) {
-          results.push({ title, url, snippet, site: 'duckduckgo', thumbnail: null });
-          count++;
+      const tweet = json.tweet;
+      if (!tweet) continue;
+
+      r.author = tweet.author?.name || tweet.author?.screen_name || null;
+      r.title = tweet.text?.slice(0, 100) || r.title;
+
+      if (tweet.media?.photos) {
+        for (const photo of tweet.media.photos) {
+          r.media_urls.push(photo.url);
         }
       }
-    } catch (e) {
-      console.error(`DuckDuckGo error for "${q}":`, e);
-    }
-  }
-  return results;
-}
+      if (tweet.media?.videos) {
+        for (const video of tweet.media.videos) {
+          r.media_urls.push(video.url);
+          r.content_type = 'video';
+        }
+      }
 
-export async function searchHitomi(
-  queries: string[],
-  maxResults: number,
-): Promise<SearchResult[]> {
-  const results: SearchResult[] = [];
-  for (const q of queries) {
-    try {
-      const url = `https://hitomi.la/search.html?q=${enc(q)}`;
-      const resp = await fetch(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; rv:120.0) Gecko/20100101 Firefox/120.0',
-          'Referer': 'https://hitomi.la/',
-        },
-      });
-      if (!resp.ok) continue;
-
-      const html = await resp.text();
-      const galleryRegex = /<li[^>]*>[\s\S]*?<a[^>]*href="([^"]*)"[^>]*>[\s\S]*?<img[^>]*(?:data-src|src)="([^"]*)"[^>]*>/gi;
-
-      let match;
-      let count = 0;
-      while ((match = galleryRegex.exec(html)) !== null && count < maxResults) {
-        let href = match[1];
-        let thumb = match[2];
-
-        if (href.startsWith('/')) href = `https://hitomi.la${href}`;
-        if (thumb.startsWith('//')) thumb = `https:${thumb}`;
-        else if (thumb.startsWith('/')) thumb = `https://hitomi.la${thumb}`;
-
-        results.push({
-          title: q,
-          url: href,
-          snippet: '',
-          site: 'hitomi',
-          thumbnail: thumb || null,
-        });
-        count++;
+      if (r.content_type === 'other' && r.media_urls.length > 0) {
+        r.content_type = 'illustration';
+      }
+      if (r.media_urls[0]) {
+        r.thumbnail = r.media_urls[0];
       }
     } catch (e) {
-      console.error(`Hitomi error for "${q}":`, e);
+      console.error(`FxTwitter error for ${tweetId}:`, e);
     }
   }
-  return results;
 }
 
-export async function searchKemono(
-  queries: string[],
-  maxResults: number,
-): Promise<SearchResult[]> {
-  const results: SearchResult[] = [];
-  for (const q of queries) {
-    try {
-      const url = `https://kemono.su/api/v1/search?q=${enc(q)}`;
-      const resp = await fetch(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; rv:120.0) Gecko/20100101 Firefox/120.0',
-          'Accept': 'application/json',
-        },
-      });
-      if (!resp.ok) continue;
-
-      const data = await resp.json() as Array<{
-        service?: string;
-        user?: string;
-        id?: string;
-        title?: string;
-        content?: string;
-        file?: { path?: string };
-      }>;
-
-      for (const post of data.slice(0, maxResults)) {
-        const postUrl = `https://kemono.su/${post.service || ''}/user/${post.user || ''}/post/${post.id || ''}`;
-        results.push({
-          title: post.title || `${post.service} / ${post.user}`,
-          url: postUrl,
-          snippet: post.content?.slice(0, 200) || '',
-          site: 'kemono',
-          thumbnail: post.file?.path
-            ? `https://kemono.su/thumbnail/${post.file.path}`
-            : null,
-        });
-      }
-    } catch (e) {
-      console.error(`Kemono error for "${q}":`, e);
-    }
-  }
-  return results;
+function isTwitterUrl(url: string): boolean {
+  return url.includes('x.com/') || url.includes('twitter.com/');
 }
 
-export async function searchMomonga(
-  queries: string[],
-  maxResults: number,
-): Promise<SearchResult[]> {
-  const results: SearchResult[] = [];
-  for (const q of queries) {
-    try {
-      const url = `https://momon-ga.com/?q=${enc(q)}`;
-      const resp = await fetch(url, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; rv:120.0) Gecko/20100101 Firefox/120.0' },
-      });
-      if (!resp.ok) continue;
+function extractTweetId(url: string): string {
+  const match = url.match(/\/status(?:es)?\/(\d+)/);
+  return match?.[1] || '';
+}
 
-      const html = await resp.text();
-      const linkRegex = /<a[^>]*href="([^"]*(?:\/view\/|\/photo\/|\/image\/)[^"]*)"[^>]*>([\s\S]*?)<\/a>/gi;
-      const imgRegex = /<img[^>]*(?:data-src|src)="([^"]*)"[^>]*>/gi;
+function extractSite(url: string): string {
+  if (url.includes('hitomi.la')) return 'hitomi';
+  if (url.includes('kemono.su') || url.includes('kemono.party')) return 'kemono';
+  if (url.includes('momon-ga.com')) return 'momonga';
+  if (url.includes('x.com') || url.includes('twitter.com')) return 'twitter';
+  if (url.includes('pixiv.net')) return 'pixiv';
+  if (url.includes('fanbox.cc')) return 'fanbox';
+  if (url.includes('patreon.com')) return 'patreon';
+  if (url.includes('fantia.jp')) return 'fantia';
+  if (url.includes('deviantart.com')) return 'deviantart';
+  if (url.includes('youtube.com') || url.includes('youtu.be')) return 'youtube';
+  if (url.includes('nicovideo.jp')) return 'nicovideo';
+  if (url.includes('bilibili.com')) return 'bilibili';
+  if (url.includes('skeb.jp')) return 'skeb';
+  if (url.includes('skima.jp')) return 'skima';
 
-      let linkMatch;
-      let count = 0;
-      while ((linkMatch = linkRegex.exec(html)) !== null && count < maxResults) {
-        let href = linkMatch[1];
-        const text = linkMatch[2].replace(/<[^>]*>/g, '').trim();
-
-        if (href.startsWith('/')) href = `https://momon-ga.com${href}`;
-
-        const imgSection = html.slice(Math.max(0, linkMatch.index - 200), linkMatch.index + 200);
-        imgRegex.lastIndex = 0;
-        const imgMatch = imgRegex.exec(imgSection);
-        let thumb = imgMatch?.[1] || null;
-        if (thumb?.startsWith('/')) thumb = `https://momon-ga.com${thumb}`;
-
-        results.push({
-          title: text || q,
-          url: href,
-          snippet: '',
-          site: 'momonga',
-          thumbnail: thumb,
-        });
-        count++;
-      }
-    } catch (e) {
-      console.error(`Momon-ga error for "${q}":`, e);
-    }
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return 'unknown';
   }
-  return results;
+}
+
+function normalizeUrl(url: string): string {
+  return url.trim()
+    .replace(/\/$/, '')
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, '')
+    .toLowerCase();
 }

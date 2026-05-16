@@ -1,126 +1,102 @@
 pub mod searxng;
-pub mod duckduckgo;
-pub mod twitter;
-pub mod hitomi;
-pub mod kemono;
-pub mod momonga;
+pub mod fxtwitter;
 
-use crate::models::{QueryPlan, SiteResults};
+use crate::llm::classify_results;
+use crate::models::{ClassifiedResults, ContentType, QueryPlan, SearchResult};
 use searxng::search_searxng;
-use duckduckgo::search_duckduckgo;
-use twitter::search_twitter;
-use hitomi::search_hitomi;
-use kemono::search_kemono;
-use momonga::search_momonga;
-use std::collections::HashMap;
-
-pub fn get_enabled_sites(plan: &QueryPlan) -> Vec<&str> {
-    plan.site_queries
-        .iter()
-        .filter(|(_, queries)| !queries.is_empty())
-        .map(|(site, _)| site.as_str())
-        .collect()
-}
+use fxtwitter::resolve_fxtwitter;
+use std::collections::{HashMap, HashSet};
 
 pub async fn execute_search(
     client: &reqwest::Client,
     plan: &QueryPlan,
     searxng_url: &str,
-    nitter_url: &str,
     max_results: usize,
-) -> Vec<SiteResults> {
-    let tasks: Vec<_> = plan
-        .site_queries
-        .iter()
-        .filter(|(_, queries)| !queries.is_empty())
-        .map(|(site, queries)| {
-            let site = site.clone();
-            let queries = queries.clone();
-            let client = client.clone();
-            let searxng_url = searxng_url.to_string();
-            let nitter_url = nitter_url.to_string();
-            tokio::spawn(async move {
-                let results = match site.as_str() {
-                    "searxng" => search_searxng(&client, &searxng_url, &queries, max_results).await,
-                    "duckduckgo" => search_duckduckgo(&client, &queries, max_results).await,
-                    "twitter" => search_twitter(&client, &nitter_url, &queries, max_results).await,
-                    "hitomi" => search_hitomi(&client, &queries, max_results).await,
-                    "kemono" => search_kemono(&client, &queries, max_results).await,
-                    "momonga" => search_momonga(&client, &queries, max_results).await,
-                    _ => Ok(Vec::new()),
-                };
+) -> Vec<SearchResult> {
+    let mut raw_results = search_searxng(client, searxng_url, &plan.searxng_queries, max_results)
+        .await
+        .unwrap_or_default();
 
-                match results {
-                    Ok(r) => {
-                        tracing::info!("[{}] Found {} results", site, r.len());
-                        Some(SiteResults {
-                            site: site.to_string(),
-                            results: r,
-                        })
-                    }
-                    Err(e) => {
-                        tracing::error!("[{}] Search error: {}", site, e);
-                        Some(SiteResults {
-                            site: site.to_string(),
-                            results: Vec::new(),
-                        })
-                    }
-                }
-            })
-        })
-        .collect();
+    deduplicate(&mut raw_results);
 
-    let mut all_results = Vec::new();
-    for task in tasks {
-        if let Ok(Some(site_results)) = task.await {
-            all_results.push(site_results);
-        }
-    }
+    resolve_fxtwitter(client, &mut raw_results).await;
 
-    all_results.sort_by_key(|s| -(s.results.len() as i32));
-    all_results
+    raw_results
 }
 
-pub fn deduplicate_results(all_results: &mut [SiteResults]) {
-    let mut seen_urls: HashMap<String, bool> = HashMap::new();
-
-    for site_result in all_results.iter_mut() {
-        site_result.results.retain(|r| {
-            let key = normalize_url(&r.url);
-            if seen_urls.contains_key(&key) {
-                false
-            } else {
-                seen_urls.insert(key, true);
-                true
-            }
-        });
+pub async fn classify_and_group(
+    client: &reqwest::Client,
+    ollama_url: &str,
+    model: &str,
+    results: Vec<SearchResult>,
+) -> ClassifiedResults {
+    if results.is_empty() {
+        return ClassifiedResults::new();
     }
+
+    match classify_results(client, ollama_url, model, &results).await {
+        Ok(classified) => classified,
+        Err(e) => {
+            tracing::error!("Classification error: {}", e);
+            heuristic_classify(results)
+        }
+    }
+}
+
+fn heuristic_classify(results: Vec<SearchResult>) -> ClassifiedResults {
+    let mut out = ClassifiedResults::new();
+    let site_mapping: HashMap<&str, ContentType> = HashMap::from([
+        ("hitomi", ContentType::Manga),
+        ("momonga", ContentType::Manga),
+        ("kemono", ContentType::Illustration),
+        ("fanbox", ContentType::Illustration),
+        ("patreon", ContentType::Illustration),
+        ("fantia", ContentType::Illustration),
+        ("twitter", ContentType::Illustration),
+        ("pixiv", ContentType::Illustration),
+        ("deviantart", ContentType::Illustration),
+        ("skeb", ContentType::Illustration),
+        ("skima", ContentType::Illustration),
+        ("youtube", ContentType::Video),
+        ("nicovideo", ContentType::Video),
+        ("bilibili", ContentType::Video),
+    ]);
+
+    for mut r in results {
+        if r.content_type == ContentType::Other {
+            r.content_type = site_mapping
+                .get(r.site.as_str())
+                .cloned()
+                .unwrap_or(ContentType::Other);
+        }
+
+        let list = match r.content_type {
+            ContentType::Manga => &mut out.manga,
+            ContentType::Cg => &mut out.cg,
+            ContentType::Video => &mut out.video,
+            ContentType::Illustration => &mut out.illustration,
+            ContentType::Other => &mut out.other,
+        };
+        list.push(r);
+    }
+
+    out
+}
+
+fn deduplicate(results: &mut Vec<SearchResult>) {
+    let mut seen: HashSet<String> = HashSet::new();
+    results.retain(|r| {
+        let key = normalize_url(&r.url);
+        seen.insert(key)
+    });
 }
 
 fn normalize_url(url: &str) -> String {
-    let url = url.trim_end_matches('/');
-    let url = url.strip_prefix("https://").unwrap_or(url);
-    let url = url.strip_prefix("http://").unwrap_or(url);
-    let url = url.strip_prefix("www.").unwrap_or(url);
-    url.to_lowercase()
-}
-
-pub fn extract_content_summary(results: &[SiteResults]) -> String {
-    let total: usize = results.iter().map(|s| s.results.len()).sum();
-    let mut summary = format!("Found {} results across {} sites.\n\n", total, results.len());
-
-    for site_result in results {
-        summary.push_str(&format!("## {} ({} results)\n\n", site_result.site, site_result.results.len()));
-        for (i, r) in site_result.results.iter().take(5).enumerate() {
-            summary.push_str(&format!(
-                "{}. **{}**\n   {}\n   {}\n\n",
-                i + 1,
-                r.title,
-                r.url,
-                r.snippet
-            ));
-        }
-    }
-
-    summary
+    url.trim()
+        .trim_end_matches('/')
+        .strip_prefix("https://")
+        .unwrap_or_else(|| url.strip_prefix("http://").unwrap_or(url))
+        .strip_prefix("www.")
+        .unwrap_or(url)
+        .to_lowercase()
 }

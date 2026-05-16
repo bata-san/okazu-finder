@@ -4,20 +4,31 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchRequest {
     pub query: String,
-    #[serde(default)]
-    pub sites: Option<Vec<String>>,
-    #[serde(default = "default_max_results")]
     pub max_results: usize,
+    #[serde(default)]
+    pub content_types: Vec<ContentType>,
 }
 
-fn default_max_results() -> usize {
-    20
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ContentType {
+    Manga,
+    Cg,
+    Video,
+    Illustration,
+    Other,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QueryPlan {
-    pub original_query: String,
-    pub site_queries: HashMap<String, Vec<String>>,
+impl std::fmt::Display for ContentType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ContentType::Manga => write!(f, "manga"),
+            ContentType::Cg => write!(f, "cg"),
+            ContentType::Video => write!(f, "video"),
+            ContentType::Illustration => write!(f, "illustration"),
+            ContentType::Other => write!(f, "other"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,32 +38,59 @@ pub struct SearchResult {
     pub snippet: String,
     pub site: String,
     pub thumbnail: Option<String>,
+    pub content_type: ContentType,
+    pub author: Option<String>,
+    pub media_urls: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SiteResults {
-    pub site: String,
-    pub results: Vec<SearchResult>,
+pub struct QueryPlan {
+    pub original_query: String,
+    pub searxng_queries: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum StreamEvent {
-    #[serde(rename = "plan")]
-    Plan { data: QueryPlan },
-    #[serde(rename = "site_results")]
-    SiteResults { data: SiteResults },
-    #[serde(rename = "done")]
-    Done { total: usize },
-    #[serde(rename = "error")]
-    Error { message: String },
+pub struct ClassifiedResults {
+    pub manga: Vec<SearchResult>,
+    pub cg: Vec<SearchResult>,
+    pub video: Vec<SearchResult>,
+    pub illustration: Vec<SearchResult>,
+    pub other: Vec<SearchResult>,
+}
+
+impl ClassifiedResults {
+    pub fn new() -> Self {
+        ClassifiedResults {
+            manga: Vec::new(),
+            cg: Vec::new(),
+            video: Vec::new(),
+            illustration: Vec::new(),
+            other: Vec::new(),
+        }
+    }
+
+    pub fn total(&self) -> usize {
+        self.manga.len() + self.cg.len() + self.video.len() + self.illustration.len() + self.other.len()
+    }
+
+    pub fn all_sorted(self) -> Vec<(ContentType, Vec<SearchResult>)> {
+        let mut cats = vec![
+            (ContentType::Manga, self.manga),
+            (ContentType::Cg, self.cg),
+            (ContentType::Video, self.video),
+            (ContentType::Illustration, self.illustration),
+            (ContentType::Other, self.other),
+        ];
+        cats.retain(|(_, v)| !v.is_empty());
+        cats
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResponse {
     pub query: String,
     pub query_plan: QueryPlan,
-    pub all_results: Vec<SiteResults>,
+    pub classified: ClassifiedResults,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,4 +98,5 @@ pub struct HealthResponse {
     pub status: String,
     pub ollama: bool,
     pub searxng: bool,
+    pub fxtwitter: bool,
 }

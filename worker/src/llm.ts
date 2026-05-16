@@ -1,94 +1,166 @@
-import type { QueryPlan, Env } from './types';
+import type { QueryPlan, SearchResult, ClassifiedResults, Env } from './types';
 
-// Default system prompt for query optimization.
-// Customize it by setting the SYSTEM_PROMPT env var in wrangler.toml or dashboard.
-const SYSTEM_PROMPT = `You are an expert search query optimizer for finding multimedia content across platforms.
+const QUERY_DECOMPOSE_PROMPT = `You are a search query optimizer. Given a user's query, generate SearXNG search queries to find relevant content across the web.
 
-Given a user's description of what they want to find (character name, series, artist, subject, etc.), generate optimized search queries for different platforms.
+Generate queries using site: operators for known platforms:
+- site:hitomi.la for doujinshi/manga/artbooks
+- site:kemono.su OR site:kemono.party for creator content (Fanbox/Patreon/Boosty)
+- site:x.com OR site:twitter.com for illustrations/fanart
+- site:momon-ga.com for manga/image galleries
+- site:pixiv.net for illustrations
+- site:fanbox.cc for creator content
+- site:patreon.com for creator content
+- site:fantia.jp for creator content
+- site:deviantart.com for artwork
+- site:skeb.jp for commissions
+- Use general queries (no site:) for broader discovery
 
-Platform details:
-- twitter: Social media for illustrations/artwork. Use relevant hashtags, names in both Japanese and English. Include terms like "イラスト", "fanart", "illust".
-- hitomi: Large doujinshi/manga repository (hitomi.la). Use English/romaji titles, character names, series names, artist names.
-- kemono: Creator content aggregator (kemono.su). Search by artist handle, character name, series name.
-- momonga: Japanese image gallery (momon-ga.com). Use Japanese keywords, character names, series names, descriptive terms.
-- searxng: General web metasearch. Use broad queries to find content on other sites.
+Context about content types by site:
+- hitomi.la: primarily manga/doujinshi, some illustration artbooks
+- kemono.su: primarily illustrations from Fanbox/Patreon
+- x.com/twitter.com: primarily illustrations
+- momon-ga.com: primarily manga
+- pixiv.net: illustrations and manga
 
 Rules:
-1. Generate 2-4 queries per platform
-2. Mix Japanese and English/romaji keywords where the content is Japanese in origin
-3. Be specific but cover common variations
-4. Include relevant tags and terms for each platform
-5. Do NOT add "SFW" or safety modifiers that would restrict search results
+1. Generate 4-8 queries total, mixing site-specific and general queries
+2. Use both Japanese and English/romaji keywords
+3. Target different content types
+4. Be specific but cover variations
 
-Return ONLY valid JSON, no markdown, no explanation:
-{"twitter":["q1","q2"],"hitomi":["q1","q2"],"kemono":["q1","q2"],"momonga":["q1","q2"],"searxng":["q1","q2"]}`;
+Return ONLY valid JSON array of strings, no markdown, no explanation:
+["query1", "query2", "query3"]`;
 
-export async function generateQueryPlan(
-  env: Env,
-  query: string,
-): Promise<QueryPlan> {
+const CLASSIFY_PROMPT = `You are a content classifier. Classify each search result into exactly one category.
+
+Categories:
+- "manga": Doujinshi, manga, comics, artbooks, manga collections
+- "cg": CG collections, 3D renders, digital art sets, game rips
+- "video": Animations, videos, motion content, MP4/WEBM
+- "illustration": Single illustrations, fanart, image posts, screenshots
+- "other": Cannot determine or doesn't fit above
+
+Site biases:
+- hitomi.la: Usually "manga", sometimes "illustration"
+- kemono.su: Usually "illustration"
+- twitter.com / x.com: Usually "illustration"
+- momon-ga.com: Usually "manga"
+- pixiv.net: "illustration" or "manga"
+- youtube.com / nicovideo.jp / bilibili.com: Usually "video"
+- fanbox.cc / patreon.com / fantia.jp: Usually "illustration"
+
+Return ONLY valid JSON, no markdown:
+{"results":{"0":{"content_type":"manga","author":"Artist"},"1":{"content_type":"illustration","author":null}}}`;
+
+export async function generateQueryPlan(env: Env, query: string): Promise<QueryPlan> {
   const homeUrl = env.HOME_SERVER_URL;
   if (!homeUrl) {
-    return fallbackQueryPlan(query);
+    return { original_query: query, searxng_queries: [query] };
   }
 
   try {
-    const resp = await fetch(`${homeUrl}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: env.OLLAMA_MODEL,
-        messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: query },
-        ],
-        stream: false,
-        format: 'json',
-      }),
-    });
-
-    if (!resp.ok) {
-      console.error('Ollama error:', resp.status);
-      return fallbackQueryPlan(query);
-    }
-
-    const data = await resp.json() as { message: { content: string } };
-    const content = data.message.content.trim();
+    const content = await ollamaChat(env, homeUrl, QUERY_DECOMPOSE_PROMPT, query);
     const cleaned = cleanJson(content);
-
-    try {
-      const siteQueries = JSON.parse(cleaned) as Record<string, string[]>;
-      return { original_query: query, site_queries: siteQueries };
-    } catch {
-      console.error('Failed to parse LLM response:', content);
-      return fallbackQueryPlan(query);
-    }
+    const queries: string[] = JSON.parse(cleaned);
+    return { original_query: query, searxng_queries: queries.length > 0 ? queries : [query] };
   } catch (e) {
-    console.error('LLM fetch error:', e);
-    return fallbackQueryPlan(query);
+    console.error('Query plan error:', e);
+    return { original_query: query, searxng_queries: [query] };
   }
 }
 
-function fallbackQueryPlan(query: string): QueryPlan {
-  return {
-    original_query: query,
-    site_queries: {
-      searxng: [query],
-      duckduckgo: [query],
-      hitomi: [query],
-      kemono: [query],
-      twitter: [query],
-      momonga: [query],
-    },
+export async function classifyResults(env: Env, results: SearchResult[]): Promise<ClassifiedResults> {
+  const homeUrl = env.HOME_SERVER_URL;
+  if (!homeUrl || results.length === 0) {
+    return heuristicClassify(results);
+  }
+
+  try {
+    const items = results.map((r, i) => ({
+      id: String(i),
+      title: r.title,
+      url: r.url,
+      snippet: r.snippet,
+      site: r.site,
+    }));
+
+    const content = await ollamaChat(env, homeUrl, CLASSIFY_PROMPT, JSON.stringify(items));
+    const cleaned = cleanJson(content);
+    const parsed = JSON.parse(cleaned);
+    const resultMap = parsed.results || {};
+
+    const out: ClassifiedResults = { manga: [], cg: [], video: [], illustration: [], other: [] };
+
+    results.forEach((r, i) => {
+      const cls = resultMap[String(i)];
+      const ct = cls?.content_type || determineTypeBySite(r.site);
+      const list = out[ct as keyof ClassifiedResults] || out.other;
+      list.push({ ...r, content_type: ct, author: cls?.author || null });
+    });
+
+    return out;
+  } catch (e) {
+    console.error('Classification error:', e);
+    return heuristicClassify(results);
+  }
+}
+
+function heuristicClassify(results: SearchResult[]): ClassifiedResults {
+  const out: ClassifiedResults = { manga: [], cg: [], video: [], illustration: [], other: [] };
+
+  for (const r of results) {
+    const ct = determineTypeBySite(r.site);
+    const list = out[ct] || out.other;
+    list.push({ ...r, content_type: ct });
+  }
+
+  return out;
+}
+
+function determineTypeBySite(site: string): 'manga' | 'cg' | 'video' | 'illustration' | 'other' {
+  const mapping: Record<string, 'manga' | 'cg' | 'video' | 'illustration'> = {
+    hitomi: 'manga',
+    momonga: 'manga',
+    kemono: 'illustration',
+    fanbox: 'illustration',
+    patreon: 'illustration',
+    fantia: 'illustration',
+    twitter: 'illustration',
+    pixiv: 'illustration',
+    deviantart: 'illustration',
+    skeb: 'illustration',
+    skima: 'illustration',
+    youtube: 'video',
+    nicovideo: 'video',
+    bilibili: 'video',
   };
+  return mapping[site] || 'other';
+}
+
+async function ollamaChat(env: Env, homeUrl: string, systemPrompt: string, userMessage: string): Promise<string> {
+  const resp = await fetch(`${homeUrl}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: env.OLLAMA_MODEL,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userMessage },
+      ],
+      stream: false,
+      format: 'json',
+    }),
+  });
+
+  if (!resp.ok) throw new Error(`Ollama error ${resp.status}`);
+  const data = await resp.json() as { message: { content: string } };
+  return data.message.content.trim();
 }
 
 function cleanJson(raw: string): string {
   const trimmed = raw.trim();
-  const start = trimmed.indexOf('{');
-  const end = trimmed.lastIndexOf('}');
-  if (start >= 0 && end > start) {
-    return trimmed.slice(start, end + 1);
-  }
+  const start = trimmed.indexOf(trimmed.startsWith('[') ? '[' : '{');
+  const end = trimmed.lastIndexOf(trimmed.startsWith('[') ? ']' : '}');
+  if (start >= 0 && end > start) return trimmed.slice(start, end + 1);
   return trimmed;
 }

@@ -31,6 +31,11 @@ export function ResultCard({ result }: Props) {
         {result.author && (
           <div className="result-author">by {result.author}</div>
         )}
+        {result.media_urls.length > 0 && (
+          <div className="result-media-count">
+            {result.media_urls.length} media
+          </div>
+        )}
         {result.snippet && (
           <div className="snippet">{result.snippet}</div>
         )}

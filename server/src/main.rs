@@ -3,6 +3,7 @@ mod models;
 mod routes;
 mod search;
 mod llm;
+mod extract;
 
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;

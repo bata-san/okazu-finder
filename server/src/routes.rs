@@ -76,7 +76,7 @@ async fn search_handler(
 
     tracing::info!("SearXNG queries: {:?}", plan.searxng_queries);
 
-    let raw_results = search::execute_search(
+    let mut raw_results = search::execute_search(
         &state.http_client,
         &plan,
         &state.config.searxng_url,
@@ -85,6 +85,9 @@ async fn search_handler(
     .await;
 
     tracing::info!("Raw results: {}", raw_results.len());
+
+    crate::extract::enrich_results(&state.http_client, &mut raw_results).await;
+    tracing::info!("Extraction complete. Media URLs enriched.");
 
     let classified = search::classify_and_group(
         &state.http_client,
@@ -140,7 +143,7 @@ async fn search_stream_handler(
             }
         };
 
-        let raw_results = search::execute_search(
+        let mut raw_results = search::execute_search(
             &state.http_client,
             &plan,
             &state.config.searxng_url,
@@ -150,6 +153,8 @@ async fn search_stream_handler(
         let _ = tx.send(Ok(Event::default().event("results").json_data(&serde_json::json!({
             "count": raw_results.len()
         })).unwrap_or_default()));
+
+        crate::extract::enrich_results(&state.http_client, &mut raw_results).await;
 
         let classified = search::classify_and_group(
             &state.http_client,

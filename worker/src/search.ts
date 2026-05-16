@@ -1,4 +1,4 @@
-import type { SearchResult } from './types';
+import type { SearchResult, ContentType } from './types';
 
 function enc(s: string): string {
   return encodeURIComponent(s);
@@ -45,6 +45,153 @@ export async function searchSearxng(
   }
 
   return allResults;
+}
+
+export async function enrichResults(results: SearchResult[]): Promise<void> {
+  const fetches = results.map(async (r) => {
+    try {
+      const resp = await fetch(r.url, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; rv:132.0) Gecko/20100101 Firefox/132.0' },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!resp.ok) return;
+
+      const html = await resp.text();
+      const meta = extractMeta(html, r.url, r.site);
+
+      if (meta.title && (r.title.length < 10 || !r.title)) r.title = meta.title;
+      if (meta.description && (r.snippet.length < 50 || !r.snippet)) r.snippet = meta.description;
+      if (meta.author && !r.author) r.author = meta.author;
+      if (!r.thumbnail && meta.thumbnails[0]) r.thumbnail = meta.thumbnails[0];
+      for (const u of meta.mediaUrls) {
+        if (!r.media_urls.includes(u)) r.media_urls.push(u);
+      }
+      for (const u of meta.thumbnails) {
+        if (!r.media_urls.includes(u)) r.media_urls.push(u);
+      }
+      if (meta.contentTypeHint && r.content_type === 'other') {
+        r.content_type = meta.contentTypeHint;
+      }
+    } catch {
+      // page fetch failed, skip enrichment
+    }
+  });
+
+  await Promise.all(fetches);
+}
+
+interface ExtractedMeta {
+  title: string | null;
+  description: string | null;
+  author: string | null;
+  thumbnails: string[];
+  mediaUrls: string[];
+  contentTypeHint: ContentType | null;
+}
+
+function extractMeta(html: string, baseUrl: string, site: string): ExtractedMeta {
+  const meta: ExtractedMeta = {
+    title: null,
+    description: null,
+    author: null,
+    thumbnails: [],
+    mediaUrls: [],
+    contentTypeHint: null,
+  };
+
+  // Site-specific extraction
+  if (site === 'hitomi') {
+    const galleryMatch = html.match(/<h1[^>]*>([^<]*)<\/h1>/i)
+      || html.match(/<div[^>]*class="[^"]*title[^"]*"[^>]*>([^<]*)<\/div>/i);
+    if (galleryMatch) meta.title = galleryMatch[1].trim();
+
+    const imgMatches = html.matchAll(/<img[^>]*(?:data-src|src)="([^"]*)"[^>]*>/gi);
+    for (const m of imgMatches) {
+      meta.mediaUrls.push(resolveUrl(m[1], baseUrl));
+    }
+    meta.contentTypeHint = 'manga';
+  } else if (site === 'momonga') {
+    const titleMatch = html.match(/<h1[^>]*>([^<]*)<\/h1>/i)
+      || html.match(/<title>([^<]*)<\/title>/i);
+    if (titleMatch) meta.title = titleMatch[1].trim();
+
+    const imgMatches = html.matchAll(/<img[^>]*(?:data-src|data-lazy-src|src)="([^"]*)"[^>]*>/gi);
+    for (const m of imgMatches) {
+      meta.mediaUrls.push(resolveUrl(m[1], baseUrl));
+    }
+    meta.contentTypeHint = 'manga';
+  } else if (site === 'kemono') {
+    // Kemono returns JSON through API, already handled
+    const imgMatches = html.matchAll(/https:\/\/kemono\.su\/data\/[^"'\s]+/gi);
+    for (const m of imgMatches) {
+      meta.mediaUrls.push(m[0]);
+    }
+    meta.contentTypeHint = 'illustration';
+  }
+
+  // Generic OG/meta extraction
+  const ogTitle = html.match(/<meta[^>]+property="og:title"[^>]+content="([^"]*)"/i)
+    || html.match(/<meta[^>]+name="og:title"[^>]+content="([^"]*)"/i);
+  if (ogTitle && !meta.title) meta.title = ogTitle[1];
+
+  const ogDesc = html.match(/<meta[^>]+property="og:description"[^>]+content="([^"]*)"/i)
+    || html.match(/<meta[^>]+name="og:description"[^>]+content="([^"]*)"/i)
+    || html.match(/<meta[^>]+name="description"[^>]+content="([^"]*)"/i);
+  if (ogDesc) meta.description = ogDesc[1].slice(0, 500);
+
+  const ogImage = html.match(/<meta[^>]+property="og:image"[^>]+content="([^"]*)"/i)
+    || html.match(/<meta[^>]+name="twitter:image"[^>]+content="([^"]*)"/i);
+  if (ogImage) meta.thumbnails.push(resolveUrl(ogImage[1], baseUrl));
+
+  const metaAuthor = html.match(/<meta[^>]+name="author"[^>]+content="([^"]*)"/i);
+  if (metaAuthor) meta.author = metaAuthor[1];
+
+  // General image extraction
+  const imgTagMatches = html.matchAll(/<img[^>]*(?:data-src|src)="([^"]*)"[^>]*>/gi);
+  let imgCount = 0;
+  for (const m of imgTagMatches) {
+    if (imgCount >= 10) break;
+    const imgUrl = resolveUrl(m[1], baseUrl);
+    if (isImageUrl(imgUrl)) {
+      meta.mediaUrls.push(imgUrl);
+      imgCount++;
+    }
+  }
+
+  // Video extraction
+  const videoMatches = html.matchAll(/<(?:video|source)[^>]+src="([^"]*)"[^>]*>/gi);
+  for (const m of videoMatches) {
+    meta.mediaUrls.push(resolveUrl(m[1], baseUrl));
+    meta.contentTypeHint = 'video';
+  }
+
+  if (meta.contentTypeHint && (meta.mediaUrls.length > 5 || html.includes('gallery') || html.includes('doujin'))) {
+    meta.contentTypeHint = 'manga';
+  }
+
+  return meta;
+}
+
+function resolveUrl(src: string, base: string): string {
+  if (!src) return '';
+  if (src.startsWith('http://') || src.startsWith('https://')) return src;
+  if (src.startsWith('//')) return 'https:' + src;
+  if (src.startsWith('/')) {
+    try {
+      const u = new URL(base);
+      return u.origin + src;
+    } catch {
+      return base + src;
+    }
+  }
+  return base.replace(/\/$/, '') + '/' + src;
+}
+
+function isImageUrl(url: string): boolean {
+  const l = url.toLowerCase();
+  return l.endsWith('.jpg') || l.endsWith('.jpeg') || l.endsWith('.png')
+    || l.endsWith('.gif') || l.endsWith('.webp') || l.endsWith('.avif')
+    || l.includes('img') || l.includes('image') || l.includes('thumb');
 }
 
 export async function resolveFxtwitter(results: SearchResult[]): Promise<void> {

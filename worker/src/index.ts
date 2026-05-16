@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { Env, SearchRequest, SearchResult } from './types';
 import { generateQueryPlan, classifyResults } from './llm';
-import { searchSearxng, resolveFxtwitter } from './search';
+import { searchSearxng, resolveFxtwitter, enrichResults } from './search';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -44,6 +44,8 @@ app.post('/api/search', async (c) => {
   );
 
   await resolveFxtwitter(rawResults);
+
+  await enrichResults(rawResults);
 
   const classified = await classifyResults(c.env, rawResults);
 

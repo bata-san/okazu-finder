@@ -1,6 +1,19 @@
 use crate::models::SearchResult;
 use crate::models::ContentType;
 
+const BLOCKED_DOMAINS: &[&str] = &[
+    "pinterest.com", "pinimg.com", "pinterest",
+    "unsplash.com", "shutterstock.com", "dreamstime.com",
+    "istockphoto.com", "123rf.com", "gettyimages.com",
+    "freepik.com", "depositphotos.com", "alamy.com",
+    "500px.com", "stock.adobe.com", "medium.com",
+    "artic.edu",
+];
+
+fn is_blocked(url: &str) -> bool {
+    BLOCKED_DOMAINS.iter().any(|d| url.contains(d))
+}
+
 pub async fn search_searxng(
     client: &reqwest::Client,
     searxng_url: &str,
@@ -11,7 +24,7 @@ pub async fn search_searxng(
 
     for query in queries {
         let url = format!(
-            "{}/search?q={}&format=json&safesearch=0&categories=general,images,videos&engines=google,bing,duckduckgo,brave,qwant",
+            "{}/search?q={}&format=json&safesearch=0&categories=general,images&engines=google,bing,duckduckgo,brave,qwant",
             searxng_url,
             urlencoding(query)
         );
@@ -26,6 +39,9 @@ pub async fn search_searxng(
         if let Some(results) = json["results"].as_array() {
             for r in results.iter().take(max_results) {
                 let url_str = r["url"].as_str().unwrap_or("").to_string();
+                if is_blocked(&url_str) {
+                    continue;
+                }
                 let site = extract_site_name(&url_str);
 
                 all_results.push(SearchResult {

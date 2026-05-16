@@ -1,56 +1,72 @@
 import type { QueryPlan, SearchResult, ClassifiedResults, Env } from './types';
 
-const QUERY_DECOMPOSE_PROMPT = `You are a search query optimizer. Given a user's query, generate SearXNG search queries to find relevant content across the web.
+// ── クエリ分解プロンプト ──────────────────────────────────
+const QUERY_DECOMPOSE_PROMPT = `あなたはアダルトコンテンツ専門の検索クエリ最適化AIです。
+ユーザーが入力したキーワード（キャラ名・シリーズ名・シチュエーション・フェチなど）を元に、SearXNGで使う最適な検索クエリを生成してください。
 
-Generate queries using site: operators for known platforms:
-- site:hitomi.la for doujinshi/manga/artbooks
-- site:kemono.su OR site:kemono.party for creator content (Fanbox/Patreon/Boosty)
-- site:x.com OR site:twitter.com for illustrations/fanart
-- site:momon-ga.com for manga/image galleries
-- site:pixiv.net for illustrations
-- site:fanbox.cc for creator content
-- site:patreon.com for creator content
-- site:fantia.jp for creator content
-- site:deviantart.com for artwork
-- site:skeb.jp for commissions
-- Use general queries (no site:) for broader discovery
+検索対象サイト：
+- site:hitomi.la → 同人誌・エロ漫画・CG集・アートブック
+- site:kemono.su OR site:kemono.party → Fanbox/Patreon/Boosty/Fantiaの有料コンテンツ
+- site:x.com OR site:twitter.com → エロイラスト・R18ファンアート
+- site:momon-ga.com → エロ漫画・同人誌の転載ギャラリー
+- site:pixiv.net → R18イラスト・漫画
+- site:fanbox.cc → クリエイターの有料投稿
+- site:patreon.com → クリエイターの有料投稿
+- site:fantia.jp → クリエイターの有料投稿
+- site:deviantart.com → アートワーク
+- site:skeb.jp → コミッション作品
+- 一般クエリ（site:なし）→ 上記以外のサイトも含めた広域検索
 
-Context about content types by site:
-- hitomi.la: primarily manga/doujinshi, some illustration artbooks
-- kemono.su: primarily illustrations from Fanbox/Patreon
-- x.com/twitter.com: primarily illustrations
-- momon-ga.com: primarily manga
-- pixiv.net: illustrations and manga
+クエリ生成ルール：
+1. 合計4〜8個のクエリを生成（site:あり＋一般クエリを混ぜる）
+2. 日本語と英語/ローマ字の両方を含める（例："site:hitomi.la フリーレン フェルン R18" "site:hitomi.la frieren fern hentai"）
+3. 検索意図に応じて以下のキーワードを適切に追加：
+   - 同人誌系: doujin, 同人, R18, 成人向け, hentai
+   - イラスト系: illust, イラスト, fanart, R18, NSFW, えっち
+   - 動画系: animation, video, 動画, MP4
+   - CG集系: CG集, CG collection, 3D, digital
+   - シチュエーション・フェチはそのまま英語/日本語で追加
+4. キャラ名の表記ゆれを考慮（漢字/カタカナ/ローマ字）
+5. safesearchやSFWフィルターを外す指示は不要（SearXNG側でsafesearch=0を指定済）
 
-Rules:
-1. Generate 4-8 queries total, mixing site-specific and general queries
-2. Use both Japanese and English/romaji keywords
-3. Target different content types
-4. Be specific but cover variations
-
-Return ONLY valid JSON array of strings, no markdown, no explanation:
+必ずJSON配列のみを返してください。説明やマークダウンは一切不要です：
 ["query1", "query2", "query3"]`;
 
-const CLASSIFY_PROMPT = `You are a content classifier. Classify each search result into exactly one category.
+// ── コンテンツ分類プロンプト ──────────────────────────────
+const CLASSIFY_PROMPT = `あなたはアダルトコンテンツの分類AIです。各検索結果を正確なカテゴリに分類してください。
 
-Categories:
-- "manga": Doujinshi, manga, comics, artbooks, manga collections
-- "cg": CG collections, 3D renders, digital art sets, game rips
-- "video": Animations, videos, motion content, MP4/WEBM
-- "illustration": Single illustrations, fanart, image posts, screenshots
-- "other": Cannot determine or doesn't fit above
+カテゴリ定義：
+- "manga": 同人誌、エロ漫画、成年コミック、漫画形式のCG集、アートブック
+  ※ hitomi.laやmomon-ga.comから来たものは基本manga
+  ※ ページ数が多く連続した画像があるコンテンツもmanga
+- "cg": 3DCG集、デジタルアートセット、ゲームのエロMOD/リッピング、CGイラスト集
+  ※ 複数枚のレンダリング画像で構成されるセット
+  ※ patreon/fanboxのCGクリエイター作品もここ
+- "video": アニメーション、動画、MP4/WEBM/GIFアニメ、同人アニメ
+  ※ youtube/nicovideo/bilibiliのURLは原則video
+- "illustration": 一枚絵、イラスト、ファンアート、ラクガキ、スクリーンショット
+  ※ twitter/pixiv/skeb/kemonoの単品投稿は基本これ
+  ※ 画像が1〜3枚程度の投稿もillustration
+- "other": 上記のどれにも当てはまらない、または判断不能
 
-Site biases:
-- hitomi.la: Usually "manga", sometimes "illustration"
-- kemono.su: Usually "illustration"
-- twitter.com / x.com: Usually "illustration"
-- momon-ga.com: Usually "manga"
-- pixiv.net: "illustration" or "manga"
-- youtube.com / nicovideo.jp / bilibili.com: Usually "video"
-- fanbox.cc / patreon.com / fantia.jp: Usually "illustration"
+サイト別の分類バイアス（優先度高）：
+- hitomi.la → ほぼ "manga"（同人誌サイト）。ごく稀にアートブック系で "illustration"
+- kemono.su → 基本 "illustration"（Fanbox投稿の転載）。動画投稿なら "video"
+- twitter.com / x.com → 基本 "illustration"。動画付きツイートは "video"
+- momon-ga.com → ほぼ "manga"（エロ漫画転載サイト）
+- pixiv.net → "illustration" または "manga"（ページ数で判断）
+- fanbox.cc / patreon.com / fantia.jp → "illustration" または "cg"（CGクリエイターの場合）
+- youtube.com / nicovideo.jp / bilibili.com → 必ず "video"
+- skeb.jp / skima.jp → "illustration"（コミッション作品）
 
-Return ONLY valid JSON, no markdown:
-{"results":{"0":{"content_type":"manga","author":"Artist"},"1":{"content_type":"illustration","author":null}}}`;
+作者名の抽出：
+- URLやタイトル、スニペットから作者名が推測できる場合は author に設定
+- kemonoの場合は "username (service)" 形式
+- twitterの場合は @handle または表示名
+- pixivの場合はユーザー名
+
+入力は検索結果のJSON配列です。以下の形式のJSONオブジェクトのみを返してください：
+{"results":{"0":{"content_type":"manga","author":"サークル名"},"1":{"content_type":"illustration","author":"@artist"}}}`;
 
 export async function generateQueryPlan(env: Env, query: string): Promise<QueryPlan> {
   const homeUrl = env.HOME_SERVER_URL;

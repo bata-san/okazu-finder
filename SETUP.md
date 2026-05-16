@@ -20,18 +20,42 @@ curl -fsSL https://ollama.com/install.sh | sh
 winget install Ollama.Ollama
 ```
 
-### モデルをプル
+### モデルをプル（Gemma 4 Uncensored - CPU動作対応）
+
+使用モデル: [HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive](https://huggingface.co/HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive)
+- 4Bパラメータ（省メモリ）
+- GGUFフォーマット、複数量子化レベルあり
+- 内蔵GPU/CPU専用でも十分動作
+- 0/465 Refusals（完全無規制）
+- 日本語・英語マルチリンガル
+
 ```bash
-ollama pull gemma3:12b
+# IQ3_M（4.4GB）- 省メモリ + 十分な品質（推奨）
+ollama pull hf.co/HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive:IQ3_M
+
+# または Q4_K_M（5.0GB）- 品質重視
+ollama pull hf.co/HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive:Q4_K_M
 ```
 
-※ 12Bモデルには最低16GBのVRAM推奨。VRAMが足りなければ `gemma3:4b` でも動くが精度は落ちる。
-※ uncensored版が必要なら [ollama.com](https://ollama.com) で `gemma3-uncensored` などを探して pull。
+プル後、短い名前でエイリアス作成:
+```bash
+ollama cp "hf.co/HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive:IQ3_M" gemma4u
+```
 
 ### 動作確認
 ```bash
-ollama run gemma3:12b "Hello"
+ollama run gemma4u "Hello. 日本語で応答してください。"
 ```
+→ 日本語で返ってくればOK
+
+### 必要メモリ
+| 量子化 | ファイルサイズ | 必要RAM (推測) |
+|---|---|---|
+| IQ3_M | 4.4 GB | 8 GB |
+| Q4_K_M | 5.0 GB | 10 GB |
+| Q5_K_M | 5.4 GB | 12 GB |
+
+※ 内蔵GPU（共有メモリ）の場合はシステムRAMがそのまま使われる。
 
 ### ネットワーク設定（重要）
 デフォルトでは `127.0.0.1:11434` のみ listen。外部からアクセスするには：
@@ -205,7 +229,7 @@ cargo build --release
 ### 環境変数
 ```bash
 export OKAZU_OLLAMA_URL="http://localhost:11434"
-export OKAZU_OLLAMA_MODEL="gemma3:12b"
+export OKAZU_OLLAMA_MODEL="gemma4u"
 export OKAZU_SEARXNG_URL="http://localhost:8080"
 ```
 
@@ -246,7 +270,7 @@ npx wrangler secret put SEARXNG_URL
 ### 1. Ollama確認
 ```bash
 curl http://localhost:11434/api/tags
-# → {"models":[{"name":"gemma3:12b",...}]}
+# → {"models":[{"name":"gemma4u:latest",...}]}
 ```
 
 ### 2. SearXNG確認
@@ -274,10 +298,11 @@ curl -X POST https://okazu-finder-worker.butter3.workers.dev/api/search \
 ## トラブルシューティング
 
 | 問題 | 確認事項 |
-|---|---|
+|---|---|---|
 | Ollamaに繋がらない | `OLLAMA_HOST=0.0.0.0` 設定確認、ファイアウォールで11434開放 |
 | SearXNGが結果ゼロ | `settings.yml` の engines がコメント解除されているか確認 |
-| レスポンスが遅い | `gemma3:4b` に変更、またはSearXNGの engines を減らす |
+| レスポンスが遅い | IQ3_M（4.4GB）を使用。必要ならSearXNGのenginesを減らす |
+| メモリ不足 | IQ3_M量子化（4.4GB）に変更、またはシステムRAM増設 |
 | 検索結果が少ない | SearXNGにGoogleのAPIキー設定を追加（[docs](https://docs.searxng.org/)） |
 | WorkerがOllamaに繋がらない | Cloudflare Tunnelのステータス確認: `cloudflared tunnel info okazu-home` |
 
@@ -287,7 +312,9 @@ curl -X POST https://okazu-finder-worker.butter3.workers.dev/api/search \
 
 | 項目 | 最低 | 推奨 |
 |---|---|---|
-| RAM | 16GB | 32GB+ |
-| VRAM | 8GB (4Bモデル) | 16GB+ (12Bモデル) |
+| RAM | 8GB | 16GB+ |
 | ストレージ | 10GB | 50GB+ |
 | ネットワーク | アップロード10Mbps | 100Mbps+ |
+
+※ Gemma 4 E4B (IQ3_M) は4.4GB。内蔵GPUの共有メモリ環境でもCPU推論で動作。
+※ VRAM専用GPU不要。CPUのみで4Bモデルなら十分な速度が出る（10-20 token/s）。

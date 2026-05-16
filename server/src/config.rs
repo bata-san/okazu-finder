@@ -21,7 +21,7 @@ fn default_ollama_url() -> String {
 }
 
 fn default_ollama_model() -> String {
-    "gemma3:12b".into()
+    "gemma4u".into()
 }
 
 fn default_searxng_url() -> String {

@@ -3,7 +3,7 @@ main = "src/index.ts"
 compatibility_date = "2025-05-15"
 
 [vars]
-OLLAMA_MODEL = "gemma3:12b"
+OLLAMA_MODEL = "gemma4u"
 MAX_RESULTS_PER_SITE = "20"
 
 # 自宅サーバーのURL (Cloudflare Tunnel または公開URL)

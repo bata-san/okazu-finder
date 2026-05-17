@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import type { Env, SearchRequest, SearchResult } from './types';
+import type { Env, SearchRequest } from './types';
 import { generateQueryPlan, classifyResults } from './llm';
 import { searchSearxng, resolveFxtwitter, enrichResults } from './search';
 
@@ -8,7 +8,7 @@ const app = new Hono<{ Bindings: Env }>();
 
 app.use('*', cors());
 
-app.get('/api/health', async (c) => {
+app.get('/health', async (c) => {
   const homeUrl = c.env.HOME_SERVER_URL;
   let ollama = false;
 
@@ -26,7 +26,7 @@ app.get('/api/health', async (c) => {
   });
 });
 
-app.post('/api/search', async (c) => {
+app.post('/search', async (c) => {
   const body = await c.req.json<SearchRequest>();
   const query = body.query?.trim();
   if (!query) {
@@ -44,7 +44,6 @@ app.post('/api/search', async (c) => {
   );
 
   await resolveFxtwitter(rawResults);
-
   await enrichResults(rawResults);
 
   const classified = await classifyResults(c.env, rawResults);

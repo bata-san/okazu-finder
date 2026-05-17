@@ -9,8 +9,17 @@ export async function searchSearxng(
   queries: string[],
   maxResults: number,
 ): Promise<SearchResult[]> {
-  if (!searxngUrl) return [];
+  if (searxngUrl && searxngUrl.trim() !== '') {
+    return searchSearxngApi(searxngUrl, queries, maxResults);
+  }
+  return [];
+}
 
+async function searchSearxngApi(
+  searxngUrl: string,
+  queries: string[],
+  maxResults: number,
+): Promise<SearchResult[]> {
   const allResults: SearchResult[] = [];
   const seenUrls = new Set<string>();
 
@@ -41,6 +50,67 @@ export async function searchSearxng(
       }
     } catch (e) {
       console.error(`SearXNG error for "${q}":`, e);
+    }
+  }
+
+  return allResults;
+}
+
+async function searchDuckduckgo(
+  queries: string[],
+  maxResults: number,
+): Promise<SearchResult[]> {
+  const allResults: SearchResult[] = [];
+  const seenUrls = new Set<string>();
+
+  for (const q of queries) {
+    try {
+      const url = `https://lite.duckduckgo.com/lite/?q=${enc(q)}`;
+      const resp = await fetch(url, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; rv:132.0) Gecko/20100101 Firefox/132.0' },
+      });
+      if (!resp.ok) continue;
+
+      const html = await resp.text();
+      const lines = html.split('\n');
+
+      const links: Array<{url: string; title: string}> = [];
+      const snippets: string[] = [];
+
+      for (const line of lines) {
+        if (line.includes('class="result-link"')) {
+          const hrefMatch = line.match(/href="([^"]*)"/);
+          if (hrefMatch) {
+            links.push({
+              url: hrefMatch[1],
+              title: line.replace(/<[^>]*>/g, '').trim(),
+            });
+          }
+        } else if (line.includes('class="result-snippet"')) {
+          snippets.push(line.replace(/<[^>]*>/g, '').replace(/&[^;]+;/g, ' ').trim());
+        }
+      }
+
+      for (let i = 0; i < Math.min(links.length, maxResults); i++) {
+        const link = links[i];
+        const snippet = snippets[i] || '';
+        const key = normalizeUrl(link.url);
+        if (!seenUrls.has(key)) {
+          seenUrls.add(key);
+          allResults.push({
+            title: link.title || q,
+            url: link.url,
+            snippet,
+            site: extractSite(link.url),
+            thumbnail: null,
+            content_type: 'other',
+            author: null,
+            media_urls: [],
+          });
+        }
+      }
+    } catch (e) {
+      console.error(`DuckDuckGo error for "${q}":`, e);
     }
   }
 

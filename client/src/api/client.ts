@@ -5,12 +5,12 @@ function getApiBase(): string {
     const stored = localStorage.getItem('okazu_api_url');
     if (stored) return stored;
   }
-  return '/api';
+  return 'https://okazu-finder-worker.butter3.workers.dev';
 }
 
 export async function search(query: string, maxResults?: number): Promise<SearchResponse> {
   const base = getApiBase();
-  const res = await fetch(`${base}/api/search`, {
+  const res = await fetch(`${base}/search`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ query, max_results: maxResults }),
@@ -32,7 +32,7 @@ export function searchStream(
   const controller = new AbortController();
   const base = getApiBase();
   const params = new URLSearchParams({ q: query, max: String(maxResults) });
-  const url = `${base}/api/search/stream?${params}`;
+  const url = `${base}/search/stream?${params}`;
 
   fetch(url, { signal: controller.signal })
     .then(async (response) => {
@@ -78,6 +78,6 @@ export function searchStream(
 
 export async function checkHealth(apiUrl?: string): Promise<HealthResponse> {
   const base = apiUrl || getApiBase();
-  const res = await fetch(`${base}/api/health`);
+  const res = await fetch(`${base}/health`);
   return res.json();
 }

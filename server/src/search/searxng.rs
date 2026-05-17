@@ -53,6 +53,8 @@ pub async fn search_searxng(
                     content_type: ContentType::Other,
                     author: None,
                     media_urls: Vec::new(),
+                    score: None,
+                    source_tags: Vec::new(),
                 });
             }
         }
@@ -65,6 +67,10 @@ fn extract_site_name(url: &str) -> String {
     if url.contains("hitomi.la") { return "hitomi".into(); }
     if url.contains("kemono.su") || url.contains("kemono.party") { return "kemono".into(); }
     if url.contains("momon-ga.com") { return "momonga".into(); }
+    if url.contains("danbooru.donmai.us") { return "danbooru".into(); }
+    if url.contains("rule34.xxx") || url.contains("rule34.paheal.net") { return "rule34".into(); }
+    if url.contains("gelbooru.com") { return "gelbooru".into(); }
+    if url.contains("sankakucomplex.com") { return "sankaku".into(); }
     if url.contains("x.com") || url.contains("twitter.com") { return "twitter".into(); }
     if url.contains("pixiv.net") { return "pixiv".into(); }
     if url.contains("fanbox.cc") { return "fanbox".into(); }

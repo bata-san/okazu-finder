@@ -7,6 +7,8 @@ mod extract;
 
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
+use tower_http::services::ServeDir;
+use axum::routing::get_service;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -28,7 +30,17 @@ async fn main() -> anyhow::Result<()> {
         http_client,
     };
 
+    let serve_dir = get_service(
+        ServeDir::new("../client/dist")
+    ).handle_error(|err| async move {
+        (
+            axum::http::StatusCode::NOT_FOUND,
+            format!("File not found: {}", err),
+        )
+    });
+
     let app = routes::router()
+        .fallback_service(serve_dir)
         .layer(CorsLayer::permissive())
         .with_state(state);
 

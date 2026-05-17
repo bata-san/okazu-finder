@@ -41,6 +41,8 @@ pub struct SearchResult {
     pub content_type: ContentType,
     pub author: Option<String>,
     pub media_urls: Vec<String>,
+    pub score: Option<i32>,
+    pub source_tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

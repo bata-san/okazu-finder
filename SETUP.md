@@ -1,11 +1,21 @@
 # okazu-finder サーバーセットアップ指示書
 
-## 概要
+## アーキテクチャ概要
 
-自宅サーバーで以下の3つのサービスを立ち上げる：
-1. **Ollama** - LLM推論（クエリ分解 + コンテンツ分類）
-2. **SearXNG** - メタ検索エンジン
-3. **Cloudflare Tunnel** - 自宅サーバーを安全に公開
+```
+ブラウザ (https://okazu-finder.pages.dev)
+    │
+    └──→ Cloudflare Worker (https://okazu-finder-worker.butter3.workers.dev)
+              │
+              ├──→ SearXNG (search.sandwich-butter.tech:8080) ← Cloudflare Tunnel
+              │     ├── Google
+              │     ├── Bing
+              │     ├── DuckDuckGo
+              │     └── Brave
+              │
+              └──→ Ollama (ollama.sandwich-butter.tech:11434) ← Cloudflare Tunnel
+                    └── Gemma 4 E4B Uncensored (gemma4u)
+```
 
 ---
 
@@ -183,33 +193,42 @@ cloudflared tunnel create okazu-home
 
 ### DNS設定
 ```bash
-# ollama用サブドメイン
-cloudflared tunnel route dns okazu-home ollama.yourdomain.com
-
-# searxng用サブドメイン
-cloudflared tunnel route dns okazu-home search.yourdomain.com
+# 既存の sandwich-butter.tech ゾーンを使用
+cloudflared tunnel route dns okazu-home ollama.sandwich-butter.tech
+cloudflared tunnel route dns okazu-home search.sandwich-butter.tech
 ```
 
-### 設定ファイル
+### 設定ファイル（参考・既存設定）
 `~/.cloudflared/config.yml`:
 ```yaml
 tunnel: <TUNNEL_ID>  # cloudflared tunnel list で確認
 credentials-file: /home/youruser/.cloudflared/<TUNNEL_ID>.json
 
 ingress:
-  - hostname: ollama.yourdomain.com
+  - hostname: ollama.sandwich-butter.tech
     service: http://localhost:11434
-  - hostname: search.yourdomain.com
+  - hostname: search.sandwich-butter.tech
     service: http://localhost:8080
   - service: http_status:404
 ```
+
+※ Windows版は `%USERPROFILE%\.cloudflared\config.yml` に配置
 
 ### 起動
 ```bash
 cloudflared tunnel run okazu-home
 ```
 
-### 常駐化（systemd）
+### 常駐化（Windows サービス）
+
+すでにサービス登録済みの場合：
+```
+cloudflared.exe service install eyJhIjoiMDkwYWE5ZmYxZWFmN2ZjOGYwOGRkNGQxOTEzZDU3ZDkiLCJ0IjoiNWU0ODY3ZjctYjBlOS00YjE0LWIyM2YtYTc1Mzg5MDkwODQ2IiwicyI6IlVrblhyaWd1bVFqdExtK3luZjRkTW5pYm14Y2dWNFE2Q2diejcyWnErMmM9In0=
+```
+
+※ このトークンは既存の設定からコピー。`services.msc` → `Cloudflare Tunnel` が「実行中」ならOK。
+
+### 常駐化（Linux systemd）
 ```bash
 sudo cloudflared service install
 ```
@@ -250,18 +269,35 @@ export OKAZU_CLASSIFY_PROMPT="You are a content classifier..."
 
 ---
 
-## 5. Worker連携設定
+## 5. Worker + Pages 連携設定
 
 Workerから自宅サーバーにアクセスするための設定：
 
+### 5-1. SearXNG を Worker に通知
 ```bash
 cd okazu-finder/worker
-npx wrangler secret put HOME_SERVER_URL
-# → https://ollama.yourdomain.com と入力
-
 npx wrangler secret put SEARXNG_URL
-# → https://search.yourdomain.com と入力
+# → https://search.sandwich-butter.tech と入力
 ```
+
+### 5-2. Ollama を Worker に通知
+```bash
+npx wrangler secret put HOME_SERVER_URL
+# → https://ollama.sandwich-butter.tech と入力
+```
+
+### 5-3. デプロイ確認
+```bash
+npx wrangler deploy
+```
+
+### 既存のデプロイ URL（変更不要）
+
+| サービス | URL |
+|---|---|
+| フロントエンド (Pages) | `https://okazu-finder.pages.dev` |
+| API (Worker) | `https://okazu-finder-worker.butter3.workers.dev` |
+| 自宅サーバー (Tunnel) | `https://OKZ-finder.sandwich-butter.tech` |
 
 ---
 
@@ -279,19 +315,34 @@ curl "http://localhost:8080/search?q=test&format=json"
 # → {"results":[...],"query":"test"}
 ```
 
-### 3. Worker確認
+### 3. Worker ヘルスチェック
 ```bash
-curl https://okazu-finder-worker.butter3.workers.dev/api/health
+curl https://okazu-finder-worker.butter3.workers.dev/health
 # → {"status":"ok","ollama":true,"worker":true}
 ```
+※ SEARXNG_URL と HOME_SERVER_URL が設定済みなら ollama:true になる
 
-### 4. E2Eテスト
+### 4. Worker 検索テスト
 ```bash
-curl -X POST https://okazu-finder-worker.butter3.workers.dev/api/search \
+curl -s -X POST https://okazu-finder-worker.butter3.workers.dev/search \
   -H "Content-Type: application/json" \
-  -d '{"query":"フリーレン"}'
+  -d '{"query":"フリーレン","max_results":5}'
 ```
 → 検索結果 + 分類（manga/cg/video/illustration/other）が返ってくれば成功
+
+### 5. Pages フロントエンド確認
+ブラウザで以下を開く:
+```
+https://okazu-finder.pages.dev
+```
+→ 検索バーが表示され、デフォルトでWorkerを向いている
+→ 設定（⚙）からAPI URLの変更も可能
+
+### 6. 自宅サーバー直アクセス確認
+```
+https://OKZ-finder.sandwich-butter.tech
+```
+→ Pagesと同一のフロントエンド + サーバー内蔵APIの両方が動作
 
 ---
 

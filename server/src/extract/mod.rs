@@ -12,7 +12,8 @@ pub async fn enrich_results(
     results: &mut [SearchResult],
 ) {
     let extract_client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(3))
+        .connect_timeout(Duration::from_secs(2))
         .user_agent("Mozilla/5.0 (Windows NT 10.0; rv:132.0) Gecko/20100101 Firefox/132.0")
         .build()
         .unwrap_or_else(|_| client.clone());
